@@ -132,7 +132,7 @@ def compare_profiles(contrib_profile, suspect_profile, evidence_profile):
     df_per_locus = pd.DataFrame(rows)
     df_summary = pd.DataFrame({
         "Category": list(summary_counts.keys()),
-        "Count": list(summary_counts.values())
+        "Observed": list(summary_counts.values())
     })
     return df_per_locus, df_summary
 
