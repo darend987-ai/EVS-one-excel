@@ -72,8 +72,14 @@ def unique_sheet_names(base_name: str, idx: int, existing_names=None):
 # COMPARISON LOGIC
 # ==========================================================
 def compare_profiles(contrib_profile, suspect_profile, evidence_profile):
-    """Return detailed and summary comparison DataFrames."""
-    all_loci = sorted(set(contrib_profile.keys()) | set(suspect_profile.keys()) | set(evidence_profile.keys()))
+    """Return detailed (per-locus) and summary DataFrames, with Expected column."""
+    # Loci universe (preserve previous behavior)
+    all_loci = sorted(
+        set(contrib_profile.keys()) |
+        set(suspect_profile.keys()) |
+        set(evidence_profile.keys())
+    )
+
     rows = []
     summary_counts = {
         "Obligate_of_Suspect": 0,
@@ -84,6 +90,21 @@ def compare_profiles(contrib_profile, suspect_profile, evidence_profile):
         "Foreign_Alleles": 0,
     }
 
+    # ---- helpers
+    def allele_sort_key(a):
+        from decimal import Decimal
+        try:
+            d = Decimal(a)
+            return (0, float(d), "")
+        except Exception:
+            return (1, float("inf"), str(a))
+
+    def fmt(xs):
+        if not xs:
+            return "-"
+        return ", ".join(sorted(xs, key=allele_sort_key))
+
+    # ---- per-locus (observed) computation
     for locus in all_loci:
         c = contrib_profile.get(locus, set())
         s = suspect_profile.get(locus, set())
@@ -96,12 +117,7 @@ def compare_profiles(contrib_profile, suspect_profile, evidence_profile):
         missing_from_evidence_contrib = c - e
         foreign_alleles = e - (s | c)
 
-        def fmt(xs):
-            if not xs:
-                return "-"
-            return ", ".join(sorted(xs, key=allele_sort_key))
-
-        row = {
+        rows.append({
             "Locus": locus,
             "Evidence Alleles": fmt(e),
             "Suspect Alleles": fmt(s),
@@ -118,10 +134,8 @@ def compare_profiles(contrib_profile, suspect_profile, evidence_profile):
             "Missing_from_Suspect_Count": len(missing_from_evidence_suspect),
             "Missing_from_Assumed_Contributor_Count": len(missing_from_evidence_contrib),
             "Foreign_Alleles_Count": len(foreign_alleles),
-        }
-        rows.append(row)
+        })
 
-        # Update summary
         summary_counts["Obligate_of_Suspect"] += len(must_from_suspect)
         summary_counts["Obligate_of_Assumed_Contributor"] += len(must_from_contrib)
         summary_counts["Shared_All_Three"] += len(shared_all_three)
@@ -130,10 +144,33 @@ def compare_profiles(contrib_profile, suspect_profile, evidence_profile):
         summary_counts["Foreign_Alleles"] += len(foreign_alleles)
 
     df_per_locus = pd.DataFrame(rows)
+
+    # ---- Expected values (independent of evidence)
+    # Totals across all loci for suspect and contributor
+    suspect_total = sum(len(suspect_profile.get(l, set())) for l in all_loci)
+    contrib_total = sum(len(contrib_profile.get(l, set())) for l in all_loci)
+    shared_total = sum(
+        len(suspect_profile.get(l, set()) & contrib_profile.get(l, set()))
+        for l in all_loci
+    )
+
+    # Build summary with Observed and Expected
+    categories = list(summary_counts.keys())
+    observed = [summary_counts[k] for k in categories]
+    expected_map = {
+        "Obligate_of_Suspect": suspect_total,
+        "Obligate_of_Assumed_Contributor": contrib_total,
+        "Shared_All_Three": shared_total,
+        # others left blank
+    }
+    expected = [expected_map.get(k, "") for k in categories]
+
     df_summary = pd.DataFrame({
-        "Category": list(summary_counts.keys()),
-        "Observed": list(summary_counts.values())
+        "Category": categories,
+        "Observed": observed,   # previously 'Count'
+        "Expected": expected
     })
+
     return df_per_locus, df_summary
 
 
