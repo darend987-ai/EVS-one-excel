@@ -274,7 +274,9 @@ def run_comparison_from_file(uploaded_file):
     Process a single uploaded Excel file-like object.
     Returns:
       - results: dict[evidence_name] = (df_per_locus, df_summary)
-      - output_excel: BytesIO .xlsx file with two sheets per evidence
+      - output_excel: BytesIO .xlsx with:
+          - First sheet: Master_Summary (stacked summaries, each with sample name header)
+          - Then: two sheets per evidence (PL_*, SUM_*)
     """
     df0 = load_excel_sheet(uploaded_file)
     df = filter_loci_and_samples(df0)
@@ -291,33 +293,59 @@ def run_comparison_from_file(uploaded_file):
     suspect_profile = row_to_profile(suspect_row, loci_cols)
     assumed_profile = row_to_profile(assumed_row, loci_cols)
 
-    # Write an in-memory Excel with two sheets per evidence
+    # --- First, compute all per-evidence results in memory
+    results = {}                    # ev_name -> (df_per_locus, df_summary)
+    ordered_evidence = []           # preserve order for master summary
+    for idx, (_, ev_row) in enumerate(evidence_df.iterrows(), start=1):
+        ev_name = str(ev_row["Sample"]).strip()
+        ev_profile = row_to_profile(ev_row, loci_cols)
+
+        df_per_locus, df_summary = compare_profiles(
+            assumed_profile,  # assumed contributor
+            suspect_profile,  # suspect
+            ev_profile        # evidence
+        )
+        results[ev_name] = (df_per_locus, df_summary)
+        ordered_evidence.append((idx, ev_name, df_summary))
+
+    # --- Now write the Excel file (Master_Summary first, then per-evidence sheets)
     output = BytesIO()
-    results = {}
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-    # Track existing names locally to avoid re-reading every time
-        existing = set(getattr(writer.book, "sheetnames", []))
+        # 1) Create Master_Summary as the first sheet and stack all summaries
+        master_ws = writer.book.create_sheet(title="Master_Summary", index=0)
+        # We'll write into it using pandas starting at specific rows
+        current_row = 0
+        for idx, ev_name, df_summary in ordered_evidence:
+            # Write the sample name header (bold)
+            cell = master_ws.cell(row=current_row + 1, column=1, value=ev_name)
+            try:
+                from openpyxl.styles import Font
+                cell.font = Font(bold=True)
+            except Exception:
+                pass  # if styles aren't available, continue silently
 
-        for idx, (_, ev_row) in enumerate(evidence_df.iterrows(), start=1):
-            ev_name = str(ev_row["Sample"]).strip()
-            ev_profile = row_to_profile(ev_row, loci_cols)
-
-            df_per_locus, df_summary = compare_profiles(
-                assumed_profile,  # assumed contributor
-                suspect_profile,  # suspect
-                ev_profile        # evidence
+            # Write the summary table under the header
+            df_summary.to_excel(
+                writer,
+                sheet_name="Master_Summary",
+                index=False,
+                startrow=current_row + 1  # 0-based for pandas; header was at +0
             )
+            # Advance past header + table + one blank row
+            current_row += 1 + len(df_summary.index) + 2
 
-            results[ev_name] = (df_per_locus, df_summary)
+        # 2) Write per-evidence detailed and summary sheets
+        existing = set(getattr(writer.book, "sheetnames", []))
+        for idx, ev_name in [(i, n) for i, n, _ in ordered_evidence]:
+            df_per_locus, df_summary = results[ev_name]
 
-        # ✅ Clean sheet names (no hashes), add _<idx> only if needed
+            # Clean, collision-safe names (Option A: no hashes)
             per_locus_sheet, summary_sheet = unique_sheet_names(ev_name, idx, existing_names=existing)
 
-        # Write both sheets
+            # Per-locus first or summary first? (Keep your current order)
             df_per_locus.to_excel(writer, sheet_name=per_locus_sheet, index=False)
             df_summary.to_excel(writer, sheet_name=summary_sheet, index=False)
 
-        # Update local set so subsequent names consider these
             existing.add(per_locus_sheet)
             existing.add(summary_sheet)
 
